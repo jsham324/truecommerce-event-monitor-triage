@@ -73,9 +73,20 @@ public sealed class AzureOpenAiClassifier : ILlmClassifier
             new UserChatMessage(userMessage)
         };
 
-        ClientResult<ChatCompletion> response = await _chatClient
-            .CompleteChatAsync(messages, options, cancellationToken)
-            .ConfigureAwait(false);
+        // Any Azure SDK failure (CredentialUnavailableException, RequestFailedException, etc.)
+        // is translated to HttpRequestException so the TriageService resilience pipeline
+        // can apply its retry and fallback logic without knowing about Azure internals.
+        ClientResult<ChatCompletion> response;
+        try
+        {
+            response = await _chatClient
+                .CompleteChatAsync(messages, options, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new HttpRequestException($"LLM call failed: {ex.Message}", ex);
+        }
 
         var completion = response.Value;
         var json = completion.Content[0].Text;
