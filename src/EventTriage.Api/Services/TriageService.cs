@@ -9,8 +9,16 @@ using Polly.Timeout;
 
 namespace EventTriage.Api.Services;
 
+/// <summary>
+/// Defines the contract for a batch error event triage service.
+/// </summary>
 public interface ITriageService
 {
+    /// <summary>
+    /// Classifies a batch of error events and returns structured triage results.
+    /// </summary>
+    /// <param name="request">The batch request to classify.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
     Task<TriageBatchResponse> TriageAsync(
         TriageBatchRequest request,
         CancellationToken cancellationToken);
@@ -35,6 +43,14 @@ public sealed class TriageService : ITriageService
     private readonly TriageOptions _options;
     private readonly ILogger<TriageService> _logger;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TriageService"/> class.
+    /// </summary>
+    /// <param name="llm">The LLM classifier used for primary classification.</param>
+    /// <param name="fallback">The fallback classifier used on LLM failures.</param>
+    /// <param name="prompts">The prompt catalog used for versioning.</param>
+    /// <param name="options">The triage configuration options.</param>
+    /// <param name="logger">The logger for diagnostic events.</param>
     public TriageService(
         ILlmClassifier llm,
         BackupClassifier fallback,
@@ -74,6 +90,12 @@ public sealed class TriageService : ITriageService
             .Build();
     }
 
+    /// <summary>
+    /// Processes a triage batch request and returns a response containing
+    /// classification results and metrics.
+    /// </summary>
+    /// <param name="request">The batch request containing events to triage.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
     public async Task<TriageBatchResponse> TriageAsync(
         TriageBatchRequest request,
         CancellationToken cancellationToken)
@@ -123,8 +145,14 @@ public sealed class TriageService : ITriageService
         };
     }
 
-    // Internal version carries token counts so we can aggregate them; the
-    // public TriageResult does not need per-item token data.
+    /// <summary>
+    /// Classifies a single error event using the LLM pipeline or fallback path.
+    /// </summary>
+    /// <param name="evt">The event to classify.</param>
+    /// <param name="promptVersion">The prompt version to use for classification.</param>
+    /// <param name="gate">A concurrency gate to limit in-flight LLM calls.</param>
+    /// <param name="ct">A cancellation token.</param>
+    /// <returns>An internal classification result carrying token metrics.</returns>
     private async Task<InternalResult> ClassifyOneAsync(
         ErrorEvent evt,
         string promptVersion,
@@ -174,12 +202,22 @@ public sealed class TriageService : ITriageService
         }
     }
 
+    /// <summary>
+    /// Runs the heuristic fallback classifier for an event.
+    /// </summary>
+    /// <param name="evt">The event to classify with the fallback.</param>
+    /// <returns>An internal result produced by the fallback classifier.</returns>
     private InternalResult Fallback(ErrorEvent evt)
     {
         var heuristic = _fallback.Classify(evt);
         return InternalResult.FromFallback(evt.EventId, heuristic);
     }
 
+    /// <summary>
+    /// Converts an internal result into the public-facing triage result.
+    /// </summary>
+    /// <param name="internalResult">The internal result to convert.</param>
+    /// <returns>A <see cref="TriageResult"/> without token metrics.</returns>
     private static TriageResult StripTokenCounts(InternalResult internalResult)
         => new()
         {
@@ -194,21 +232,69 @@ public sealed class TriageService : ITriageService
             PromptVersion = internalResult.PromptVersion
         };
 
-    // Internal carrier - keeps token counts on each item until aggregation.
+    /// <summary>
+    /// Internal carrier that keeps token counts on each item until aggregation.
+    /// </summary>
     private sealed record InternalResult
     {
+        /// <summary>
+        /// The identifier of the original event.
+        /// </summary>
         public required string EventId { get; init; }
+
+        /// <summary>
+        /// The category assigned to the event.
+        /// </summary>
         public required string Category { get; init; }
+
+        /// <summary>
+        /// The severity assigned to the event.
+        /// </summary>
         public required Severity Severity { get; init; }
+
+        /// <summary>
+        /// The classifier's confidence score.
+        /// </summary>
         public required double Confidence { get; init; }
+
+        /// <summary>
+        /// A brief summary of the issue.
+        /// </summary>
         public required string Summary { get; init; }
+
+        /// <summary>
+        /// The remediation steps produced by the classifier.
+        /// </summary>
         public required IReadOnlyList<string> RemediationSteps { get; init; }
+
+        /// <summary>
+        /// Optional suggested owning team or queue.
+        /// </summary>
         public string? SuggestedOwner { get; init; }
+
+        /// <summary>
+        /// The source of the classification result.
+        /// </summary>
         public required string Source { get; init; }
+
+        /// <summary>
+        /// The prompt version that was used for LLM classification.
+        /// </summary>
         public string? PromptVersion { get; init; }
+
+        /// <summary>
+        /// Tokens consumed by the prompt in the LLM call.
+        /// </summary>
         public int? PromptTokens { get; init; }
+
+        /// <summary>
+        /// Tokens consumed by the completion in the LLM call.
+        /// </summary>
         public int? CompletionTokens { get; init; }
 
+        /// <summary>
+        /// Creates an internal result from an LLM classification.
+        /// </summary>
         public static InternalResult FromLlm(string eventId, LlmClassification c, string version)
             => new()
             {
@@ -225,6 +311,9 @@ public sealed class TriageService : ITriageService
                 CompletionTokens = c.CompletionTokens
             };
 
+        /// <summary>
+        /// Creates an internal result from a fallback classification.
+        /// </summary>
         public static InternalResult FromFallback(string eventId, LlmClassification c)
             => new()
             {
@@ -239,6 +328,9 @@ public sealed class TriageService : ITriageService
                 PromptVersion = null
             };
 
+        /// <summary>
+        /// Creates a dead-letter internal result when both classification paths fail.
+        /// </summary>
         public static InternalResult DeadLetter(string eventId, string reason)
             => new()
             {

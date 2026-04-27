@@ -83,6 +83,8 @@ if (app.Environment.IsDevelopment())
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
+app.MapGet("/", () => Results.Redirect("/swagger"));
+
 app.MapHealthChecks("/health/live");
 app.MapHealthChecks("/health/ready");
 app.MapTriageEndpoints();
