@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+
+  # ----------------------------------------------------------------- build/test
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore EventTriage.sln
+
+      - name: Build (Release, warnings as errors)
+        run: dotnet build EventTriage.sln --configuration Release --no-restore
+
+      - name: Test
+        run: |
+          dotnet test EventTriage.sln \
+            --configuration Release \
+            --no-build \
+            --logger "trx;LogFileName=test-results.trx" \
+            --collect:"XPlat Code Coverage" \
+            --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/
+
+      - name: Publish API
+        run: |
+          dotnet publish src/EventTriage.Api/EventTriage.Api.csproj \
+            --configuration Release \
+            --no-build \
+            --output ./publish
+
+      - name: Upload publish output
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-publish
+          path: ./publish
+
+  # ----------------------------------------------------------------- container
+  container:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push for PRs)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: |
+            event-triage-api:${{ github.sha }}
+            event-triage-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # In a real environment the next step would be:
+      #
+      #   - login: docker/login-action with a federated identity / OIDC
+      #   - push the image to ACR
+      #   - call `az containerapp update --image ...` for dev,
+      #     gated promotion to staging/prod via environment approvals.
+      #
+      # Left out here because the assessment focuses on local repo deliverables.
