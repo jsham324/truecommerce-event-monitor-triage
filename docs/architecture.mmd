@@ -1,0 +1,104 @@
+%% Intelligent Event Monitoring & Triage - End-to-End Architecture
+%% Reads left-to-right: source systems on the left, customer outcomes on the right.
+
+flowchart LR
+    %% ============== SOURCE SYSTEMS ==============
+    subgraph Sources["Disparate Source Systems"]
+        direction TB
+        S1["EDI Gateway NA<br/>(on-prem)"]
+        S2["API Sync EU<br/>(cloud REST)"]
+        S3["Scheduler Acme<br/>(legacy, free-form logs)"]
+        S4["AS2 Bridge<br/>(certificates, MDN)"]
+        S5["Future acquisitions"]
+    end
+
+    %% ============== INGESTION ==============
+    subgraph Ingest["Ingestion Layer (Azure)"]
+        direction TB
+        EH["Azure Event Hubs<br/>(error-events topic)"]
+        ADP["Source Adapters<br/>(Azure Functions / Container Apps)<br/>per-platform translators"]
+        SR["Schema Registry<br/> (Cosmos DB)<br/>(versioned definition of normalized message format)"]
+    end
+
+    %% ============== STREAM PROCESSING ==============
+    subgraph Stream["Stream Processing & Lake"]
+        direction TB
+        SP["Stream Processor<br/>(Functions w/ Event Hub trigger)"]
+        ADLS["Blob Storage (ALDS Gen2)<br/>Bronze → Silver → Gold"]
+        SF["Snowflake on Azure<br/>(analytics + ML features)"]
+    end
+
+    %% ============== AI TRIAGE SERVICE ==============
+    subgraph AI["AI Triage Service"]
+        direction TB
+        APIM["Azure API Management<br/>(rate limit, auth (JWT bearer), quotas)"]
+        ACA["Container Apps<br/><b>EventTriage.Api</b><br/>(host AI models, business logic)"]
+        Pipe["Resilience Pipeline<br/>(Polly)<br/>timeout → retry → circuit breaker → fallback"]
+        FB["Backup Classifier (rule-based)<br/>(<b>Used when AI is unavailable</b>)"]
+        AOAI["Azure OpenAI<br/>(<b>Compliance</b> - data never leaves region, <b>custom models</b> trained on customer data)<br/>strict JSON schema mode: category, severity, confidence, summary, remediationSteps, suggestedOwner"]
+        Cache["Cosmos DB<br/>idempotency + prompt & versioned AI response schema registry"]
+    end
+
+    %% ============== DOWNSTREAM ==============
+    subgraph Down["Downstream Actions"]
+        direction TB
+        SB["Service Bus<br/>(triaged-events topic)"]
+        Auto["Auto-remediation Workers<br/>(if confidence ≥ threshold)"]
+        Human["Human Review Queue<br/>(low confidence, fallback path)"]
+        Notif["Customer Notifications<br/>(email / portal / webhook)"]
+        BI["Power BI <br/>(triage trends, MTTR)"]
+    end
+
+    %% ============== OBSERVABILITY ==============
+    subgraph Obs["Observability"]
+        direction TB
+        AppI["App Insights<br/>(traces, metrics, logs)"]
+        LA["Log Analytics<br/>(KQL alerts)"]
+    end
+
+    %% ============== FLOW ==============
+    S1 --> ADP
+    S2 --> ADP
+    S3 --> ADP
+    S4 --> ADP
+    S5 -.-> ADP
+    ADP -- "normalized message format" --> EH
+    ADP -. "schema lookup" .-> SR
+
+    EH --> SP
+    SP --> ADLS
+    ADLS --> SF
+    SP -- "errors only" --> APIM
+
+    APIM --> ACA
+    ACA --> Pipe
+    Pipe -- "primary path" --> AOAI
+    Pipe -- "degraded path" --> FB
+    ACA --> Cache
+
+    ACA --> SB
+    SB --> Auto
+    SB --> Human
+    SB --> Notif
+    SF --> BI
+
+    ACA -.-> AppI
+    Pipe -.-> AppI
+    AppI --> LA
+
+    %% ============== STYLING ==============
+    classDef src       fill:#e8f0fe,stroke:#4285f4,color:#202124
+    classDef ingest    fill:#e6f4ea,stroke:#34a853,color:#202124
+    classDef stream    fill:#fef7e0,stroke:#fbbc04,color:#202124
+    classDef ai        fill:#fce8e6,stroke:#ea4335,color:#202124
+    classDef down      fill:#f3e8fd,stroke:#a142f4,color:#202124
+    classDef obs       fill:#e8eaed,stroke:#5f6368,color:#202124
+    classDef dotted    stroke-dasharray: 5 5
+
+    class S1,S2,S3,S4,S5 src
+    class EH,ADP,SR ingest
+    class SP,ADLS,SF stream
+    class APIM,ACA,Pipe,AOAI,Cache ai
+    class SB,Auto,Human,Notif,BI down
+    class AppI,LA obs
+    class FB dotted
