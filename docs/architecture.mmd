@@ -15,6 +15,7 @@ flowchart LR
     %% ============== INGESTION ==============
     subgraph Ingest["Ingestion Layer (Azure)"]
         direction TB
+        APIM["Azure API Management<br/>(rate limit, auth (JWT bearer), quotas)"]
         EH["Azure Event Hubs<br/>(error-events topic)"]
         ADP["Source Adapters<br/>(Azure Functions / Container Apps)<br/>per-platform translators"]
         SR["Schema Registry<br/> (Cosmos DB)<br/>(versioned definition of normalized message format)"]
@@ -31,7 +32,7 @@ flowchart LR
     %% ============== AI TRIAGE SERVICE ==============
     subgraph AI["AI Triage Service"]
         direction TB
-        APIM["Azure API Management<br/>(rate limit, auth (JWT bearer), quotas)"]
+        APIM2["Azure API Management<br/>(rate limit, auth (JWT bearer), quotas)"]
         ACA["Container Apps<br/><b>EventTriage.Api</b><br/>(host AI models, business logic)"]
         Pipe["Resilience Pipeline<br/>(Polly)<br/>timeout → retry → circuit breaker → fallback"]
         FB["Backup Classifier (rule-based)<br/>(<b>Used when AI is unavailable</b>)"]
@@ -57,20 +58,21 @@ flowchart LR
     end
 
     %% ============== FLOW ==============
-    S1 --> ADP
-    S2 --> ADP
-    S3 --> ADP
-    S4 --> ADP
-    S5 -.-> ADP
+    S1 --> APIM
+    S2 --> APIM
+    S3 --> APIM
+    S4 --> APIM
+    S5 -.-> APIM
+    APIM --> ADP
     ADP -- "normalized message format" --> EH
     ADP -. "schema lookup" .-> SR
 
     EH --> SP
     SP --> ADLS
     ADLS --> SF
-    SP -- "errors only" --> APIM
+    SP -- "errors only" --> APIM2
 
-    APIM --> ACA
+    APIM2 --> ACA
     ACA --> Pipe
     Pipe -- "primary path" --> AOAI
     Pipe -- "degraded path" --> FB
@@ -96,9 +98,9 @@ flowchart LR
     classDef dotted    stroke-dasharray: 5 5
 
     class S1,S2,S3,S4,S5 src
-    class EH,ADP,SR ingest
+    class EH,APIM,ADP,SR ingest
     class SP,ADLS,SF stream
-    class APIM,ACA,Pipe,AOAI,Cache ai
+    class APIM2,ACA,Pipe,AOAI,Cache ai
     class SB,Auto,Human,Notif,BI down
     class AppI,LA obs
     class FB dotted
