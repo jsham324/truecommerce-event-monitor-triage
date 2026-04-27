@@ -114,6 +114,121 @@ public class TriageEndpointIntegrationTests : IClassFixture<TriageWebAppFactory>
         (await client.GetAsync("/health/live")).StatusCode.Should().Be(HttpStatusCode.OK);
         (await client.GetAsync("/health/ready")).StatusCode.Should().Be(HttpStatusCode.OK);
     }
+
+    [Fact]
+    public async Task Batch_exceeding_max_size_returns_400()
+    {
+        var client = _factory.CreateClient();
+
+        // Default MaxBatchSize is 100; send 101 to exceed it.
+        var tooManyEvents = Enumerable.Range(1, 101).Select(i => new
+        {
+            eventId = $"evt-{i:D3}",
+            source = "test-source",
+            occurredAt = DateTimeOffset.UtcNow,
+            payload = JsonDocument.Parse("""{"msg":"x"}""").RootElement
+        }).ToArray();
+
+        var response = await client.PostAsJsonAsync("/api/v1/triage", new { events = tooManyEvents });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Event_with_empty_id_returns_400()
+    {
+        var client = _factory.CreateClient();
+
+        var request = new
+        {
+            events = new[]
+            {
+                new
+                {
+                    eventId = "",
+                    source = "test-source",
+                    occurredAt = DateTimeOffset.UtcNow,
+                    payload = JsonDocument.Parse("""{"msg":"x"}""").RootElement
+                }
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/triage", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Event_with_id_exceeding_max_length_returns_400()
+    {
+        var client = _factory.CreateClient();
+
+        var request = new
+        {
+            events = new[]
+            {
+                new
+                {
+                    eventId = new string('x', 129),
+                    source = "test-source",
+                    occurredAt = DateTimeOffset.UtcNow,
+                    payload = JsonDocument.Parse("""{"msg":"x"}""").RootElement
+                }
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/triage", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Event_with_empty_source_returns_400()
+    {
+        var client = _factory.CreateClient();
+
+        var request = new
+        {
+            events = new[]
+            {
+                new
+                {
+                    eventId = "evt-1",
+                    source = "",
+                    occurredAt = DateTimeOffset.UtcNow,
+                    payload = JsonDocument.Parse("""{"msg":"x"}""").RootElement
+                }
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/triage", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Event_with_source_exceeding_max_length_returns_400()
+    {
+        var client = _factory.CreateClient();
+
+        var request = new
+        {
+            events = new[]
+            {
+                new
+                {
+                    eventId = "evt-1",
+                    source = new string('s', 129),
+                    occurredAt = DateTimeOffset.UtcNow,
+                    payload = JsonDocument.Parse("""{"msg":"x"}""").RootElement
+                }
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/triage", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
 }
 
 public sealed class TriageWebAppFactory : WebApplicationFactory<Program>

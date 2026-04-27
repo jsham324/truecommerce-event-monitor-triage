@@ -7,6 +7,8 @@ using EventTriage.Api.Services.Options;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using Polly.CircuitBreaker;
+using Polly.Timeout;
 using Xunit;
 
 namespace EventTriage.Tests;
@@ -192,6 +194,88 @@ public class TriageServiceTests
         response.Metrics.ClassifiedByFallback.Should().Be(1);
         response.Metrics.PromptTokens.Should().Be(80);
         response.Metrics.CompletionTokens.Should().Be(30);
+    }
+
+    [Fact]
+    public async Task Falls_back_when_circuit_breaker_is_open()
+    {
+        // BrokenCircuitException is not in the retry or circuit-breaker ShouldHandle lists,
+        // so it propagates immediately out of the Polly pipeline to the dedicated catch.
+        var llm = Substitute.For<ILlmClassifier>();
+        llm.ClassifyAsync(Arg.Any<ErrorEvent>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<LlmClassification>>(_ => throw new BrokenCircuitException());
+
+        var service = BuildService(llm);
+
+        var response = await service.TriageAsync(
+            new TriageBatchRequest { Events = new[] { NewEvent() } },
+            CancellationToken.None);
+
+        response.Results[0].Source.Should().Be("fallback-heuristic");
+        response.Metrics.ClassifiedByFallback.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Falls_back_when_llm_times_out_after_all_retries()
+    {
+        var llm = Substitute.For<ILlmClassifier>();
+        llm.ClassifyAsync(Arg.Any<ErrorEvent>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<LlmClassification>>(_ => throw new TimeoutRejectedException());
+
+        // All mock calls throw, so retries are exhausted and the exception propagates.
+        var service = BuildService(llm, new TriageOptions
+        {
+            MaxParallelism = 4,
+            PerEventTimeoutSeconds = 5,
+            MaxRetries = 1,
+            MaxBatchSize = 100
+        });
+
+        var response = await service.TriageAsync(
+            new TriageBatchRequest { Events = new[] { NewEvent() } },
+            CancellationToken.None);
+
+        response.Results[0].Source.Should().Be("fallback-heuristic");
+        response.Metrics.ClassifiedByFallback.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Unexpected_exception_produces_dead_letter_and_increments_counter()
+    {
+        var llm = Substitute.For<ILlmClassifier>();
+        llm.ClassifyAsync(Arg.Any<ErrorEvent>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<LlmClassification>>(_ => throw new InvalidOperationException("unexpected"));
+
+        var service = BuildService(llm);
+
+        var response = await service.TriageAsync(
+            new TriageBatchRequest { Events = new[] { NewEvent() } },
+            CancellationToken.None);
+
+        var result = response.Results[0];
+        result.Source.Should().Be("dead-letter");
+        result.Category.Should().Be("Unknown");
+        response.Metrics.DeadLettered.Should().Be(1);
+        response.Metrics.ClassifiedByLlm.Should().Be(0);
+        response.Metrics.ClassifiedByFallback.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Cancellation_propagates_and_is_not_dead_lettered()
+    {
+        // OperationCanceledException is excluded from the generic dead-letter catch
+        // via a when-filter, so it must propagate rather than produce a dead-letter result.
+        var llm = Substitute.For<ILlmClassifier>();
+        var service = BuildService(llm);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => service.TriageAsync(
+            new TriageBatchRequest { Events = new[] { NewEvent() } },
+            cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
